@@ -1,0 +1,1173 @@
+---
+title: "How much should I work now to get paid time off later? And other data stories"
+author: "Adrian Lapadat"
+date: '2023-05-02'
+output: html_document
+---
+# Background
+
+The crux, heart and soul of this data investigation is to get to find out more about what class-related predictor variables influence the conditions of the working class, defined later. For that reason, the census was consulted, due to the reasons mentioned further below.
+
+This project is not only relevant to those interested in the working class. In fact, the reader may find it pertinent to remember that, during the course of this data investigation, the prediction models used most successfully predict the outcomes of wealthier individuals, so great is the confounding variable of income.
+
+This project establishes and tests several data models, strongly linked to their hypotheses. The goal of this project is systematic data analysis foremost.
+
+ 
+Code: `A_PAYABS~ A_FTLF + A_HGA`
+Interpretation: whether someone is paid for their abscence $J$ is modeled by whether they work full-time  or part time plus, $F$ their highest level of education, $E$. Highest level of education is determined by a continuous sequence, and future models should recode this variable as it is surely inaccurate to some degree.
+$Level_J \sim Level_P + Level_E $
+
+Hypothesis 1: The above model is the best model.
+
+Code: `paid_abscence~ A_FTLF + A_HGA + hours_worked`
+Interpretation: same as the above model, but tack how many hours someone works a week, $T$, on that bad boy.
+$Level_J \sim Level_P + Level_E + Level_T $
+
+Hypothesis 1-a: Um actually we used ridge regression to predict these coefficients so this one's definitely better
+
+Hypothesis 1 conclusion: Models have identical predictive capability.
+
+Hypotheses 2 and 3 are included as the author feels they add to the knowledge conveyed by this document, though they have not been fully tested and the author regrettably has not mathematically modeled them (he has done so, but only on the whiteboards of Wean and in his notebooks).
+
+```{r setup, include=FALSE}
+knitr::opts_knit$set(root.dir = normalizePath("//andrew.ad.cmu.edu/users/users3/alapadat/Documents/Spring 2023/DSPN/Final Project Data"))
+
+library(tidyverse)
+
+library(reshape2)
+
+library(leaps)
+
+library(correlationfunnel)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing.
+
+Load the file data for families, households, and people.
+```{r Load Data}
+#family <- read.csv("ffpub22.csv")
+household <- read.csv("hhpub22.csv")
+person <- read.csv("pppub22.csv") 
+```
+
+Establish the variables we will be taking from these expansive datasets.
+
+H_SEQ corresponds to PH_SEQ; they both identify a household. When associated with an individual, they can be used to associate an individual with a household. Association to individuals can be done by querying PPPOS, the unique identifier for people within one household.
+
+What we're going to do here is simple. We're going to make a bunch of data frames with data from different regions, which we can reasonably suppose are correlated to our outcome variables.
+
+```{r defining lazyAccuracy}
+lazyAccuracy <- function(outcome, model, data) { # Outcome: data$binarized outcome variable | Model: a glm | data 
+  glm.probs.test <- predict(model, data, type = "response")
+  glm.pred1 <- rep(0, nrow(data))
+  glm.pred1[glm.probs.test > 0.5] <- 1
+  
+  confusion_df <- data.frame(glm.pred1, outcome)
+  colnames(confusion_df) = c('predicted', 'actual')
+
+  output <- mean(confusion_df$predicted == confusion_df$actual) #accuracy
+  error <- mean(confusion_df$predicted != confusion_df$actual) #error
+  
+  return(output)
+}
+```
+
+```{r Sample Merge, echo = FALSE}
+hh.dat <- household %>%
+  select(H_SEQ, GEDIV, GEREG, GTMETSTA, H_LIVQRT, H_TENURE, HUNDER18, HEARNVAL)
+
+#Filter hh.dat data
+
+hh.dat <- hh.dat %>%
+  filter(GTMETSTA != 3,
+         #H_LIVQRT != 7,
+         H_LIVQRT != 11,
+         H_LIVQRT != 12)
+
+pp.dat <- person %>%
+  select(H_SEQ = PH_SEQ, PPPOS, A_CIVLF, PEMLR, PRUNTYPE, A_EXPLF, A_FTLF, PRDISC, A_HRS1, A_UNCOV, A_UNMEM, A_HGA, PRDTRACE, A_PAYABS, A_GRSWK, PRERELG, PEHRUSLT)
+
+pp.dat <-  pp.dat %>% 
+  unite(ID, H_SEQ, PPPOS, remove=FALSE)
+
+#merge datasets
+hhpp.dat <- inner_join(pp.dat, hh.dat, by = c("H_SEQ"))
+```
+
+# All Variables
+
+This section includes every variable relevant to the exploratory data analysis, as well as variables that were added during secondary hypothesis development as background for what was rapidly filtered out as having no correlation. Many included measures are complex and it is possible that improperly adjusted/included codes or other incidents led to inaccurate conclusions that informed secondary hypothesis development.
+
+`H_SEQ` Household Identifier
+
+`PPPOS` Unique person identifier
+
+  When used together,`H_SEQ` and `PPPOS` can be combined to create an identifier that is unique to a person's household and family. These variables are kept for future model fitting and testing etc.
+
+`A_CIVLF` Civilian Labor Force 
+
+  Select "1" to exclude all people in armed forces to reduce variance.
+
+  0 = NIU
+  1 = In universe
+
+`PRERELG` Earning eligibility flag
+
+  Defines a person as "Earnings-Eligible."
+  
+  0 = No
+  1 = Yes
+  
+## Employment-related Variables
+
+`A_FTLF` Full time labor force
+
+  0 = NIU
+  1 = FTLF
+
+`PEMLR` Major Labor Force Category
+
+  * 0 = NIO
+  * 1 = Employed, at work
+  * 2 = Employed, absent
+  * 3 = Unemployed - on layoff
+  * 4 = Unemployed - looking
+  * 5 = Not in labor force - retired
+  * 6 = Not in labor force - disabled
+  * 7 = Not in labor force - other
+
+`A_EXPLF` Experienced labor force
+
+  Definition: has this person worked a job before? 0 = No, 1 = Yes
+
+  * 0 = Not in experienced labor force
+  * 1 = Employed
+  * 2 = Unemployed
+
+`A_PAYABS` Pay for time off
+
+  0 = Not in universe/children and Armed Forces
+  1 = Yes
+  2 = No
+  3 = Self-employed
+
+`PRDISC` Discouraged worker
+
+  0 = NIU
+  1 = Discouraged worker
+  2 = Conditionally interested
+  3 = Not available
+
+`A_HRS1` Hours worked last week at all jobs
+
+  -1 = Not in universe
+  00 = Children and Armed Forces
+  01-99 = Number of hr
+
+`PEHRUSLT` Hours worked last week
+
+  Note: Measure added after Hypothesis 2.
+
+  -4 = Hours vary
+  -1 = NIU - adult civilian
+  000 = NIU - children or Armed Forces or no hours
+  1-198 = # of hours
+
+`A_GRSWK` Gross Weekly pay
+
+  The amount an individual makes at one of their jobs (ASEC dictionary phrasing: "this job") prior to deductions.
+
+  Note: Measure added after Hypothesis 2.
+  
+  0000 = NIU/Children or armed forces
+  0001-2885 = Dollar amount
+  
+`PRUNTYPE` On the job, is X covered by a union association/contract?
+  0 = Not in universe or children and Armed Forces
+  1 = Yes
+  2 = No
+  
+'A_UNCOV' On the job, is X covered by a union association/contract?
+  0 = Not in universe or children and Armed Forces
+  1 = Yes
+  2 = No
+  
+## Poor Job Outcome Variables
+
+`PRUNTYPE`
+
+  Reason for unemployment
+  
+  0 = NIU
+  1 = Job loser/on layoff
+  2 = Other job loser
+  3 = Temporary job ended
+  4 = Job leaver
+  5 = Re-entrant
+  6 = New-entran
+
+`PRDISC`
+  
+  Discouraged worker code
+  
+  0 = NIU
+  1 = Discouraged worker
+  2 = Conditionally interested
+  3 = Not available
+
+## Demographic characteristics
+
+`A_HGA`
+
+  Highest Level of Education Achieved
+  
+  0 = Children
+  31 = Less than 1st grade
+  32 = 1st,2nd,3rd,or 4th grade
+  33 = 5th or 6th grade
+  34 = 7th and 8th grade
+  35 = 9th grade
+  36 = 10th grade
+  37 = 11th grade
+  38 = 12th grade no diploma
+  39 = High school graduate - high school diploma or
+  equivalent
+  40 = Some college but no degree
+  41 = Associate degree in college - occupation/vocation
+  program
+  42 = Associate degree in college - academic program
+  43 = Bachelor's degree (for example: BA,AB,BS)
+  44 = Master's degree (for example:
+  MA,MS,MENG,MED,MSW, MBA)
+  45 = Professional school degree (for example:
+  MD,DDS,DVM,LLB,JD)
+  46 = Doctorate degree (for example: PHD,EDD)
+
+`PRDTRACE` Race
+
+  Kept for potential data visualization applications
+  
+  01 = White only
+  02 = Black only
+  03 = American Indian, Alaskan Native only (AI)
+  04 = Asian only
+  05 = Hawaiian/Pacific Islander only (HP)
+  06 = White-Black
+  07 = White-AI
+  08 = White-Asian
+  09 = White-HP
+  10 = Black-AI
+  11 = Black-Asian
+  12 = Black-HP
+  13 = AI-Asian
+  14 = AI-HP
+  15 = Asian-HP
+  16 = White-Black-AI
+  17 = White-Black-Asian
+  18 = White-Black-HP
+  19 = White-AI-Asian
+  20 = White-AI-HP
+  21 = White-Asian-HP
+  22 = Black-AI-Asian
+  23 = White-Black-AI-Asian
+  24 = White-AI-Asian-HP
+  25 = Other 3 race comb.
+  26 = Other 4 or 5 race comb.
+
+
+# Hypothesis Pre-Development
+
+## Guiding Theories
+
+Fundamentally, the guiding spirit behind this data investigation is to uncover detailed correlations between characteristics of the working class, bourgeouisie, and capital owning classes.
+
+It is not a question of whether the class conditions of these entities differ, it is a question of degree. The purpose of this investigation is hardly to once again sound the beat-up bell of class inequality throgh the framework of data, though if the reader cannot take that message away from this analysis than surely they have learned nothing useful. Rather, the purpose of the investigation is to identify which characteristics belong to each, and what they predict.
+
+However, as we are doing data science, we would do well to define the working class and bourgeouisie. For the purposes of this paper, the working class is defined as all wage earners who do not own the means to their own production (e.g. wage workers). The means of production are defined as what wage earners use to supply the product or service they work for. For a McDonald's laborer, it is the commercial kitchen. For a janitor, it is the mop and the bucket. However, there is a spectrum to the working class: people of the working class are those who earn wages, but also those who do not own the means to their own production. For the purposes of this investigation, and contrary to orthodox Socialism, the working class is herein defined to include people like doctors, professors, and engineers: a salary, by this definition, is also a "wage", as without the means to their own production, the highly-paid working class are as powerless as the steelworker from preventing the obsolescence of their existence as a class, as soon as it is more instrumental to the capitalist to dispense of them for the sake of profit. And the highly-paid working class would do well to remember that they are not as far from the McDonald's laborer as they would like to think.
+
+The capital-owning class is composed of ridiculous outliers and deserves a fair and thorough analysis in their own right. Fortunately, there are many obvious documentations of the societally cancerous nature of their existence, such as can be observed when plotting the population density by total household earnings.
+
+```{r income graph, Echo = FALSE}
+ggplot(data = hh.dat, aes(HEARNVAL)) +
+  #geom_vline(xintercept = 1200, color = "red") +
+  theme_minimal() +
+  stat_function(fun = dnorm,
+                args = list(mean = mean(hh.dat$HEARNVAL),
+                            sd = sd(hh.dat$HEARNVAL)),
+                fill = "#808080",
+                size = 3,
+                alpha = .5
+                ) +
+  geom_density(fill = "#85bb65")
+
+hh.dat <- hh.dat %>%
+  drop_na(HEARNVAL) 
+
+mean(hh.dat$HEARNVAL)
+median(hh.dat$HEARNVAL)
+sd(hh.dat$HEARNVAL)
+
+#Todo: add quartiles
+```
+To identify potentially modelable correlations, 9 variables were chosen upon the basis that they are indicators of labor force status that can be used as predictors and outcome variables.
+
+In order to develop a sense for the data, several correlation tables were made to visualise and condense the data into tables including the strongest correlations, which were later analyzed in what became Hypothesis 2.
+
+
+```{r Model Criterion Selection}
+pp.job_qual <- pp.dat %>% select(A_CIVLF, PEMLR, A_EXPLF, A_PAYABS, PRDISC, A_HRS1, A_FTLF, A_UNCOV, A_UNMEM)
+
+cor.jobqual <- cor(pp.job_qual)
+#cor.jobqual
+```
+# Correlation Table 1
+```{r Correlation Table of Starting Variables, echo = FALSE}
+melt.cor.jobqual <- melt(cor.jobqual)
+
+gg <- ggplot(data = melt.cor.jobqual, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile(color = "white") +
+  geom_text( size = 4, color = "black", aes(label = round(value, digits = 2))) +
+  scale_fill_gradient2(low = "blue", high = "red", limit = c(-1,1)) +
+  ggtitle("Correlation Table of Starting Variables") +
+  theme_minimal()
+gg <- gg + theme(
+  plot.title = element_text(color="black", size=14)
+)
+gg
+```
+The above correlations indicate some interactions between having worked a job, labor force status, and civilian labor force (See bottom left corner, `A_CIVLF`, `PEMLR`, `A_EXPLF` $\times$ `A_CIVLF`, `PEMLR`, `A_EXPLF`). 
+
+When we think about the levels and weights, it makes sense; People who are in the work force have most likely worked a job before - duh. So those two weights could sum up in a model, or one could be used in favor of the other for a more lightweight data set. But that misses the point; both of the measures are filters, included here as confirmatory measures for the non-filter measures (e.g. here to disprove our expectations about variables of interest before going into the correlation table).
+
+The negative correlations are explainable by the fact that most of the points in the `PEMLR` column belong to the unemployed or people who are not in the labor force - and so naturally those people are going to not have worked a job before (or be 43% less likely to by this table's approximation, even with the employed weighed in). Also, the weights for the employed here are "1" and "2" out of 7 total measures, so you can see how the correlation table is being untrustworthy there.
+
+Otherwise, we supposed there might be some interactions between the union membership measures `A_UNMEM` & `A_UNCOV` and hourly work, as well as perhaps having a part-time job, which are the measures `A_FTLF` & `A_HRS1`. 
+
+2 things we're not seeing very highly correlated are being a discouraged worker and whether or not one is being paid for absence.
+
+After analyzing the prior data correlation table, we thought we would be remiss not to add race and education.
+
+```{r splitting data frames}
+pp.job_qual <- pp.dat %>% select(A_CIVLF, PEMLR, PRUNTYPE, A_EXPLF, A_FTLF, A_HRS1, A_UNCOV, A_UNMEM, A_HGA, PRDISC, PRDTRACE)
+```
+
+```{r correlation analysis, echo = FALSE}
+cor.jobqual <- cor(pp.job_qual)
+melt.cor.jobqual <- melt(cor.jobqual)
+
+gg <- ggplot(data = melt.cor.jobqual, aes(x = Var1, y = Var2, fill = value)) +
+  geom_tile(color = "white") +
+  geom_text( size = 4, color = "black", aes(label = round(value, digits = 2))) +
+  scale_fill_gradient2(low = "blue", high = "red", limit = c(-1,1)) +
+  theme_minimal()
+gg
+```
+#Analysis: Employed People
+
+At this point in the process, the switch was made to analyzing a dataset of solely employed people, accomplished through selecting people in the civilian labor force as well as those who are employed. The latter term, "employed", is defined as people who are both currently working and absent from work but employed.
+
+The reasoning for this switch was narrowing our analysis to job outcomes given one is working a job in the future, which does make analysis more difficult but also allows us to remove dimensionality from our data. The elegance of the method is up for debate.
+
+```{r quickly developing a function to make things correlation tables, echo=FALSE}
+df.HeatMap <- function(data){
+  cor.jobqual <- cor(data)
+  melt.cor.jobqual <- melt(cor.jobqual)
+
+  gg <- ggplot(data = melt.cor.jobqual, aes(x = Var1, y = Var2, fill = value)) +
+    geom_tile(color = "white") +
+    geom_text( size = 4, color = "black", aes(label = round(value, digits = 2))) +
+    scale_fill_gradient2(low = "blue", high = "red", limit = c(-1,1)) +
+    theme_minimal()
+  
+  return(gg)
+}
+
+df.HeatMap.notext <- function(data){
+  cor.jobqual <- cor(data)
+  melt.cor.jobqual <- melt(cor.jobqual)
+
+  gg <- ggplot(data = melt.cor.jobqual, aes(x = Var1, y = Var2, fill = value)) +
+    geom_tile(color = "white") +
+    scale_fill_gradient2(low = "blue", high = "red", limit = c(-1,1)) +
+    theme_minimal()
+  
+  return(gg)
+}
+```
+
+Applying the first filter to the dataset, filtering only currently-employed people in the civilian data force.
+```{r splitting data frames 2}
+pp.jobqual.f1 <- pp.dat %>% select(A_CIVLF, PEMLR, A_EXPLF, A_FTLF, A_HRS1, A_UNCOV, A_UNMEM, A_HGA, PRDISC, PRDTRACE, A_PAYABS) #Pulling variables
+
+pp.jobqual.f1 <- pp.jobqual.f1 %>% #Filtering
+  filter(A_CIVLF == 1,
+         PEMLR == c(1, 2))
+
+df.HeatMap(pp.jobqual.f1)
+
+#Adjusting the correlation table to remove rows where SD = 0
+
+pp.jobqual.f2 <- pp.jobqual.f1 %>% 
+  select(PEMLR, A_EXPLF, A_FTLF, A_HRS1, A_UNCOV, A_UNMEM, A_HGA, PRDISC, PRDTRACE, A_PAYABS)
+
+cor.jobqual <- cor(pp.jobqual.f2)
+#cor.jobqual
+
+```
+It looks like taking people who are children, in the armed forces, unemployed, or not in the labor force changed our dataset. I show this plot to show the "before" for data cleaning, and to illustrate how these correlations became invalid.
+
+## It looks like being in a union isn't correlated with any of these measures. Effect may be too small to detect, or these measures may not be set up in the proper manner to detect them. Maybe if we isolated union membership, or use a model to predict union membership with all the other measures to investigate their correlations (or something)
+```{r}
+pp.jobqual.f3 <- pp.jobqual.f1 %>% 
+  select(PEMLR, A_FTLF, A_HRS1, A_PAYABS, A_HGA, PRDTRACE)
+
+df.HeatMap(pp.jobqual.f3)
+```
+A cleaner plot: just the valid correlations.
+
+Doesn't tell us anything unexpected at a glance between `PEMLR` $\times$ `A_HRS1`, although maybe it says that being absent, `PEMLR == 2` has something to do with being part-time `A_FTLF = 0`: which also makes sense, and is not unexpected.
+
+Highest level of education struck me is interesting, because there are some large vectors and data points moving up and down within that dataset that clearly have some correlation.
+
+Ultimately, there's nothing wrong with keeping $\beta\approx$`PEMLR == c(1,2)` in the dataset, but it doesn't really offer a meaningful interesting distinction because both outcomes mean being employed. At least, not at this point in the data analysis.
+
+So `PEMLR` was removed from the dataset.
+
+#Narrowing down further
+
+```{r}
+pp.jobqual.f4 <- pp.jobqual.f1 %>% 
+  select(A_FTLF, A_HRS1, A_PAYABS, A_HGA)
+
+#df.HeatMap(pp.jobqual.f4)
+
+
+#data = pp.jobqual.f4
+
+  cor.jobqual <- cor(pp.jobqual.f4)
+  melt.cor.jobqual <- melt(cor.jobqual)
+
+  gg <- ggplot(data = melt.cor.jobqual, aes(x = Var1, y = Var2, fill = value)) +
+    geom_tile(color = "white") +
+    geom_text( size = 4, color = "black", aes(label = round(value, digits = 2))) +
+    scale_fill_gradient2(low = "blue", high = "red", limit = c(-1,1)) +
+    theme_minimal()
+  
+  gg
+```
+When looking at this graph, one may be captivated by the intercorrelations of full/part time status. I, however, am more interested by the top right, where we, for some reason, see a negative correlation between the abscence vector and graduation achievement vectors.
+
+```{r Pass fourth filter f4 to intermediary filter f5, echo=FALSE}
+pp.jobqual.f5 <- pp.jobqual.f4 %>% 
+  select(A_FTLF, A_HRS1, A_PAYABS, A_HGA)
+
+pp.jobqual.f5 <- pp.jobqual.f5 %>%
+  filter(A_PAYABS != 0)
+
+#df.HeatMap(pp.jobqual.f5)
+
+pp.jobqual.f6 <- pp.jobqual.f5 %>% 
+  select(A_FTLF, A_PAYABS, A_HGA)
+
+#levels(pp.jobqual.f6$A_PAYABS)
+
+df.HeatMap(pp.jobqual.f6)
+```
+Our final variable set for our models is composed of `A_FTLF`, `A_PAYABS` and `A_HGA;` all we have done in this correlation table is dropped the amount of hours a person works per week from the analysis, which is a positive outcome, as the coding for hours/week was never cleaned to begin with, which is both funny and annoying.
+
+Additionally, the correlation matrix above is a little unhelpful to what we will be doing next. During hypothesis 2, I discovered that if we want to predict A_PAYABS as a binary outcome, it's more useful to look at it post-binarization. So the "real" correlations we're investigating look (approximately) more like this:
+
+```{r}
+pp.jobqual.f6 <- pp.jobqual.f5 %>% 
+  select(A_FTLF, A_PAYABS, A_HGA) %>%
+
+  mutate(A_PAYABS =
+    case_match(pp.jobqual.f5$A_PAYABS,
+             c(2) ~ 0,
+             c(1) ~ 1)
+  )
+
+#levels(pp.jobqual.f6$A_PAYABS)
+
+df.HeatMap(pp.jobqual.f6)
+```
+This heat map helps us see that we're hot on the trail of a new story. If you look at the correlation between paid absences and graduate achievement, you can see they're positive, implying that as education increases, the likelihood of being paid for an absence increases, and that correlation between (assumed) non-orthogonal vectors can be summarized as +.25.
+
+# Run glm
+
+```{r Linear Models of supposed correlations}
+
+glm.1 <- glm(A_PAYABS~ A_FTLF + A_HGA, data = pp.jobqual.f6)
+
+summary(glm.1)
+#attributes(glm.1)
+glm1.aic <- glm.1$aic #AIC of 1449
+glm1.mse <- mean(glm.1$residuals^2) #MSE of .219
+
+print(glm.1$formula)
+print("|")
+print(paste("aic", "=", glm1.aic))
+print(paste("mse", "=", glm1.mse))
+
+pp.jobqual.f7 <- pp.jobqual.f6 %>% 
+  select(A_FTLF, A_PAYABS)
+```
+The 3-term model appears to confirm these positive correlations.
+
+# Hypothesis 1
+
+Of the preselected variables, Job outcomes, represented by `A_PAYABS`, are accurately modeled by full-time/part-time worker status and education.
+
+We are essentially saying that the level of job outcomes, $J$ is predicted by the levels of whether people are paid for abscences, $P$, and their level of education, $E$.
+
+In our test model, $Level_J$ is represented by the levels 0 and 1 of the variable `A_PAYABS`.
+
+$Level_J \sim Level_P + Level_E $
+
+If we were to compare all the models that could be generated to model `A_PAYABS`, this would be the best.
+
+# Course Applications: Full Subset Selection 
+
+Run full subset selection to do what we just did, double check our work: which model does full subset selection pick?
+
+In this context, full subset selection is being used to test the accuracy of our initial hypothesis.
+
+Look at pp.jobqual.f1, since that's the filter we started all this data analysis from.
+
+```{r Full Subset Selection}
+reg.full.h1 <- regsubsets(A_PAYABS~., select(pp.jobqual.f1, c(A_CIVLF, PEMLR, A_EXPLF, A_FTLF, A_HRS1, A_UNCOV, A_UNMEM, A_HGA, PRDISC, PRDTRACE, A_PAYABS)))
+
+reg.summary <- summary(reg.full.h1)
+reg.summary
+```
+```{r}
+# Uncomment the model fit measures you want to look at. 
+
+numvar = 1:length(reg.summary$rss)# Make a vector that lists the number of variables in sequence, from 1 to 19. 
+allfalse = rep(FALSE,length(reg.summary$rss))# Starting point for an indicator that marks the best model choice for each metric.
+
+# #rss
+# rss.df <- data.frame(numvar = numvar, rss = reg.summary$rss, minrss = allfalse)
+# rss.df$minrss[which.min(reg.summary$rss)] <- TRUE
+# ggplot(rss.df,aes(x=numvar,y=rss,shape=minrss,col=minrss)) + 
+#    geom_point(size=3) + theme_light() + 
+#     labs(x = "Number of Variables", y = "RSS", color="Minimum RSS", shape="Minimum RSS")
+
+#adjr2
+adjr2.df <- data.frame(numvar = numvar, adjr2 <- reg.summary$adjr2, maxadjr2 <- allfalse)
+adjr2.df$maxadjr2[which.max(reg.summary$adjr2)] <- TRUE
+ggplot(adjr2.df,aes(x=numvar,y=adjr2,shape=maxadjr2,col=maxadjr2)) + 
+    geom_point(size=3) + theme_light() + 
+    labs(x = "Number of Variables", y = 'Adj'~R^2, color='Maximum Adj'~R^2, shape='Maximum Adj'~R^2)
+
+# #mallow's cp
+ cp.df <- data.frame(numvar = numvar, cp <- reg.summary$cp, mincp <- allfalse)
+ cp.df$mincp[which.min(reg.summary$cp)] <- TRUE
+ ggplot(cp.df,aes(x=numvar,y=cp,shape=mincp,col=mincp)) + 
+     geom_point(size=3) + theme_light() + 
+     labs(x = "Number of Variables", y = "Mallow's CP", color="Maximum CP", shape="Maximum CP")
+
+# #bic
+ bic.df <- data.frame(numvar = numvar,bic <- reg.summary$bic, minbic <- allfalse)
+ bic.df$minbic[which.min(reg.summary$bic)] <- TRUE
+ ggplot(bic.df,aes(x=numvar,y=bic,shape=minbic,col=minbic)) + 
+     geom_point(size=3) + theme_light() + 
+     labs(x = "Number of Variables", y = "BIC", color="Minimum BIC", shape="Minimum BIC")
+ 
+print(data.frame(reg.summary$which[4,]))
+```
+As far as we're concerned, the models converge on model #4: CP and BIC converge on model 4, and the degree to which maximal variance is being explained flattens out around model #4.
+
+The terms inclued in model 4 are `PEMLR`, `A_FTLF`, and `A_HRS1`, as well as `A_HGA`.
+
+In other words, the best fit model determined by full subset selection is very similar to the manually-identified model. Our initial hypothesis was that $Level_J \sim Level_P + Level_E $ was the best model.
+
+However, our regular subset model, if taken at face value, refutes our initial hypothesis.
+
+Therefore, our hypothesis must be refined.
+
+## Hypothesis 1-a
+
+Hypothesis 1-a: the best model to predict job outcome, based on our investigation thus far, is either $Level_J \sim Level_P + Level_E $ or the best model predicted by full subset selection, described above.
+
+```{r Establishing a data frame for training and testing}
+pp.paid_abscence.filters <- pp.dat %>%
+  select(A_HGA, A_PAYABS, pay_week = A_GRSWK, hours_worked = PEHRUSLT, A_FTLF) %>%
+
+  mutate(A_PAYABS =
+        case_match(pp.dat$A_PAYABS,
+                c(2) ~ 0,
+                c(1) ~ 1)) %>%
+  drop_na() %>%
+  rename(paid_abscence = A_PAYABS)
+
+pp.paid_abscence.filters <-  pp.paid_abscence.filters %>%
+  filter(hours_worked != -4,
+         hours_worked != 0)
+
+pp.paid_abscence.filters <-  pp.paid_abscence.filters %>% #Removing "Hours vary" from universe
+  mutate(pay_rate = pay_week/hours_worked)
+
+head(pp.paid_abscence.filters)
+```
+# Train and Test Set Definiton
+```{r Define Test and Train Sets}
+set.seed(4545)
+
+#pp.paid_abscence.filters
+
+#pp.paid_abscence.filters[train, ]
+
+train=sample(1:nrow(pp.paid_abscence.filters), nrow(pp.paid_abscence.filters)/10)
+test = (-train)
+
+pp.paid_abscence.train <- pp.paid_abscence.filters[train, ]
+pp.paid_abscence.test <- pp.paid_abscence.filters[test, ]
+
+dim(pp.paid_abscence.train)
+dim(pp.paid_abscence.test)
+```
+
+# Simple glm Model Testing & comparison
+
+```{r chunk_chunk, echo = FALSE}
+glm.1.train <- glm(paid_abscence~ A_FTLF + A_HGA, data = pp.paid_abscence.train)
+#summary(glm.1.train)
+
+train_input_out <- pp.paid_abscence.train$paid_abscence
+test_input_out <- pp.paid_abscence.test$paid_abscence
+
+lazyAccuracy(train_input_out, glm.1.train, pp.paid_abscence.train)
+lazyAccuracy(test_input_out, glm.1.train, pp.paid_abscence.test)
+
+glm.1a.train <- glm(paid_abscence~ A_FTLF + A_HGA + hours_worked, data = pp.paid_abscence.train)
+#summary(glm.1a.train)
+
+#Either they have the same accuracy rating or I did something wrong
+
+lazyAccuracy(train_input_out, glm.1a.train, pp.paid_abscence.train)
+lazyAccuracy(test_input_out, glm.1a.train, pp.paid_abscence.test)
+
+glm1.train.mse <- mean(glm.1.train$residuals^2) #MSE of .219
+
+print(glm.1.train$formula)
+print("|")
+print(paste("aic", "=", glm.1.train$aic))
+print(paste("mse", "=", glm1.train.mse))
+
+####
+
+
+glm1a.train.mse <- mean(glm.1a.train$residuals^2) #MSE of .219
+
+print(glm.1a.train$formula)
+print("|")
+print(paste("aic", "=", glm.1a.train$aic))
+print(paste("mse", "=", glm1a.train.mse))
+```
+It looks like both models are highly comparable; hypothesis 1 passes this test and is the best model because it is the most parsimonious. There is not enough added data explained by the second model to justify adding hours worked per week to our model necessarily.
+
+Further accuracy testing on the full dataset is required to determine further utility. However, at this point in the data investigation, investigators delved into both hours worked and education level, using a function that includes hours worked /week to model job outcome, still revolving around whether people receive paid time off or not.
+
+Further accuracy testing conducted after hypothesis 2 revealed a model success rate of approximately 70% for the above models on the train set. Model #1 appears marginally better at modeling the dataset, with an accuracy rating of 68.74% to the other model's 68.50%.
+
+###
+
+# The Education Investigation
+
+Of predictors, education has been shown to be positively correlated with income rate and negatively correlated with unemployment rate (Bureau of Labor Statistics, 2023).
+l
+That made me think - if how much people are paid is a good predictor of job outcome, than why not see if there are some strong correlations between levels of the A_HGA variable in the census and job outcomes? And so it began...I didn't know what I was going into, but shucking the kernels off this data cob was gonna be harder than wrestling an overweight walrus in heat - or so they say...
+
+First thing a man does is trace his steps. I traced my step back to a data frame from the first part of the investigation: `pp.jobqual.f5`. I know it's been a while since then, so let me remind ya of the taxonomy of that name:
+
+```{r name, echo=FALSE}
+#head(pp.jobqual.f5) #Jump-start our memory of the starting data frame / Technically filter #0 for this section
+
+pp.jobqual.education.f1 <- pp.paid_abscence.train %>% 
+  select(A_FTLF, A_HGA, hours_worked, paid_abscence) #Remove `A_PAYABS` from the DF so we can just focus on relationships between college age and outcome.
+
+#head(pp.jobqual.education.f1)
+
+pp.jobqual.education.f2 <- pp.jobqual.education.f1 %>%
+  mutate("Less than grade school" = (A_HGA == 31),
+         "Grades 1-4" = (A_HGA == 32),
+         "Grades 5-6" = (A_HGA == 33),
+         "Grades 7-8" = (A_HGA == 34),
+         "Grade 9" = (A_HGA == 35),
+         "Grade 10" = (A_HGA == 36),
+         "Grade 11" = (A_HGA == 37),
+         "Grade 12" = (A_HGA == 38),
+         "High School or Equivalent" = (A_HGA == 39),
+         "College, no degree" = (A_HGA == 40),
+         "Asocciate's (Occup./Vocational)" = (A_HGA == 41),
+         "Associate's (Academic)" = (A_HGA == 42),
+         "Bachelor's" = (A_HGA == 43),
+         "Master's" = (A_HGA == 44),
+         "Professional School" = (A_HGA == 45),
+         "Doctorate" = (A_HGA == 46),
+         )
+
+#head(pp.jobqual.education.f2)
+
+df.HeatMap.notext(pp.jobqual.education.f2)
+#df.HeatMap(pp.jobqual.education.f2)
+
+```
+> Based on this heat map, it appears that level of education is correlated with whether one is paid for one's abscences from work. Let us investigate the levels of education further.
+
+Now that we've taken a look at the correlation table, let's see if these variables explain more about job outcome, measured as time away from work. We will add other measures later, to see if those models are superior.
+
+```{r WIP Boxplots, echo = FALSE}
+#There's a lot of data, so let's visualise our model with a few box plots. 
+```
+
+## Rapidly determining a best model via full subset regression
+### Now that we've visualised our data correlations, let's find a "best model" for them quickly. 
+
+
+
+```{r}
+regfit.abs.edu <- regsubsets(paid_abscence~., select(pp.jobqual.education.f2, c(A_FTLF, paid_abscence, "Less than grade school","Grades 1-4", "Grades 5-6", "Grades 7-8", "Grade 9", "Grade 10", "Grade 11", "Grade 12", "High School or Equivalent", "College, no degree", "Asocciate's (Occup./Vocational)", "Associate's (Academic)", "Bachelor's", "Master's", "Professional School", "Doctorate")))
+
+#, "Less than grade school", "Grades 1-4", "Grades 5-6", "Grades 7-8", "Grades 8-9", "Grade 10", "Grade 11", "Grade #12", "High School or Equivalent", "College, no degree", "Asocciate's (Occup./Vocational)", "Associate's #(Academic)", "Bachelor's", "Master's", "Professional School", "Doctorate"
+
+reg.summary <- summary(regfit.abs.edu)
+#reg.summary
+```
+
+```{r look at model fit features + function build block}
+
+LazyRss <-  function(reg.summary.object) {
+     numvar = 1:length(reg.summary.object$rss)# Make a vector that lists the number of variables in sequence, from 1 to 19. 
+  allfalse = rep(FALSE,length(reg.summary.object$rss))# Starting point for an indicator that marks the best model choice for each metric.
+ rss.df <- data.frame(numvar = numvar, rss = reg.summary.object$rss, minrss = allfalse)
+ rss.df$minrss[which.min(reg.summary.object$rss)] <- TRUE
+ rss.df.gg <- ggplot(rss.df,aes(x=numvar,y=rss,shape=minrss,col=minrss)) + 
+    geom_point(size=3) + theme_light() + 
+     labs(x = "Number of Variables", y = "RSS", color="Minimum RSS", shape="Minimum RSS")
+ return(rss.df.gg)
+}
+# 
+ 
+ LazyCriteria <- function(reg.summary.object) {
+   numvar = 1:length(reg.summary.object$rss)# Make a vector that lists the number of variables in sequence, from 1 to 19. 
+  allfalse = rep(FALSE,length(reg.summary.object$rss))# Starting point for an indicator that marks the best model choice for each metric.
+   
+   adjr2.df <- data.frame(numvar = numvar, adjr2 <- reg.summary.object$adjr2, maxadjr2 <- allfalse)
+adjr2.df$maxadjr2[which.max(reg.summary.object$adjr2)] <- TRUE
+adjr2.df.gg <- ggplot(adjr2.df,aes(x=numvar,y=adjr2,shape=maxadjr2,col=maxadjr2)) + 
+    geom_point(size=3) + theme_light() + 
+    labs(x = "Number of Variables", y = 'Adj'~R^2, color='Maximum Adj'~R^2, shape='Maximum Adj'~R^2)
+
+# #mallow's cp
+ cp.df <- data.frame(numvar = numvar, cp <- reg.summary.object$cp, mincp <- allfalse)
+ cp.df$mincp[which.min(reg.summary.object$cp)] <- TRUE
+ cp.df.gg <- ggplot(cp.df,aes(x=numvar,y=cp,shape=mincp,col=mincp)) + 
+     geom_point(size=3) + theme_light() + 
+     labs(x = "Number of Variables", y = "Mallow's CP", color="Maximum CP", shape="Maximum CP")
+
+# #bic
+ bic.df <- data.frame(numvar = numvar,bic <- reg.summary.object$bic, minbic <- allfalse)
+ bic.df$minbic[which.min(reg.summary.object$bic)] <- TRUE
+ bic.df.gg <- ggplot(bic.df,aes(x=numvar,y=bic,shape=minbic,col=minbic)) + 
+     geom_point(size=3) + theme_light() + 
+     labs(x = "Number of Variables", y = "BIC", color="Minimum BIC", shape="Minimum BIC")
+ 
+ out <- list(adjr2.df.gg, cp.df.gg, bic.df.gg)
+ return(out)
+ }
+```
+
+```{r}
+LazyCriteria(reg.summary)
+LazyRss(reg.summary)
+```
+
+Based on these results, we can conclude that model 3 is the most parsimonious, while model 8 explains the most variance within the full-time labor force. We can further address that by pulling out the best fits from the `reg.summary$which` object.
+
+# Rapidly Determined Full Subset Selection Model
+```{r}
+rsw3 <- reg.summary$which[3,] #Most parsimonious
+data.frame(rsw3)
+reg.summary$which[8,] #Explain the most variance
+```
+
+So what do you think we did next? We looked at those models, that's what! If they're as good as predicted...then, good god, the tidings must be true!
+
+We are going to be using glm, because it is applicable to the exponential family of distributions, within which most of the likely relationships lie. Currently, we suspect the relationships are X and Y.
+
+Potential next steps might be including an interaction model. That is a model where we look at the interactions between variables.
+
+```{r}
+pp.jobqual.education.f4 <- pp.paid_abscence.train %>%
+    mutate(less_gs = (A_HGA == 31),
+         gs_1.4 = (A_HGA == 32),
+         gs_3.6 = (A_HGA == 33),
+         gs_7.8 = (A_HGA == 34),
+         gs_9 = (A_HGA == 35),
+         gs_10 = (A_HGA == 36),
+         gs_11 = (A_HGA == 37),
+         gs_12 = (A_HGA == 38),
+         hs = (A_HGA == 39),
+         college = (A_HGA == 40),
+         a_occ.or.voc = (A_HGA == 41),
+         a_acad = (A_HGA == 42),
+         ba = (A_HGA == 43),
+         ma = (A_HGA == 44),
+         prof.school = (A_HGA == 45),
+         doct = (A_HGA == 46),
+         )
+
+```
+
+## GLM 1: paid abscence  by full time/part time, bachelor's degree, master's. (model #3)
+```{r}
+glm(paid_abscence~ A_FTLF + ba + ma, data = pp.jobqual.education.f4)
+
+```
+## GLM 2: paid abscence: model # 8
+```{r}
+#glm(paid_abscence~ A_FTLF + gs_7.8 + gs_10 + gs_11 + gs_12 + hs + ba + ma, data = pp.jobqual.education.f4)
+glm3 <- glm(paid_abscence~ gs_7.8 + gs_10 + gs_11 + gs_12 + hs + ba + ma, data = pp.jobqual.education.f4)
+glm3
+```
+
+So we can see that these models are related. However, at this point in the analysis, we realized that it was tragic to go onward with our predicted variable being "A_PAYABS," for at least here, it appeared the correlations were too weak!
+
+# Conclusion: Hypothesis 1
+
+
+
+# Hypothesis 2 (addendum)
+
+Pay/week and hours worked/week determine alongside education level help us model whether a worker is paid for abscences from work or not.
+
+# Weekly labor hours, pay by education level
+Looking at hours worked/week and job revenue/week
+
+```{r Define Test and Train Sets 2}
+set.seed(4545)
+
+#glm.fit <- glm(paid_abscence~pay_rate, data = h2.dat.f7, family = binomial) 
+#summary(glm.fit)
+
+pp.paid_abscence.filters <- pp.dat %>%
+  select(H_SEQ, PPPOS, PRERELG, PEMLR, A_CIVLF, A_HGA, A_PAYABS, pay_week = A_GRSWK, hours_worked = PEHRUSLT) %>%
+
+  mutate(A_PAYABS =
+        case_match(pp.dat$A_PAYABS,
+                c(2) ~ 0,
+                c(1) ~ 1)) %>%
+  drop_na() %>%
+  rename(paid_abscence = A_PAYABS)
+
+pp.paid_abscence.filters <-  pp.paid_abscence.filters %>%
+  filter(hours_worked != -4,
+         hours_worked != 0)
+
+pp.paid_abscence.filters <-  pp.paid_abscence.filters %>% #Removing "Hours vary" from universe
+  mutate(pay_rate = pay_week/hours_worked)
+
+#pp.paid_abscence.filters
+
+#pp.paid_abscence.filters[train, ]
+
+train=sample(1:nrow(pp.paid_abscence.filters), nrow(pp.paid_abscence.filters)/10)
+test = (-train)
+
+pp.paid_abscence.train <- pp.paid_abscence.filters[train, ]
+pp.paid_abscence.test <- pp.paid_abscence.filters[test, ]
+
+dim(pp.paid_abscence.train)
+dim(pp.paid_abscence.test)
+```
+
+```{r hypothesis 2 universe setting, echo = FALSE}
+h2.dat <-  pp.paid_abscence.train %>%
+  filter(A_CIVLF == 1,     # Apply civilian labor force == True only filter
+         PEMLR == c(1, 2), # Apply employed-only filter
+         paid_abscence != 0,    # Filter to the universe of people who can be paid for absences (Y/N, binarizing basically)
+         PRERELG == 1 # Applying the earnings eligibility flag
+         )
+
+h2.dat <-  h2.dat %>%
+  unite(hhppID, H_SEQ, PPPOS, remove = FALSE) %>%
+  select(-H_SEQ, -PPPOS) #dropping redundant columns
+
+#Expanding education
+h2.dat <- h2.dat %>%
+  mutate(less_gs = (A_HGA == 31),
+        gs_1.4 = (A_HGA == 32),
+        gs_3.6 = (A_HGA == 33),
+        gs_7.8 = (A_HGA == 34),
+        gs_9 = (A_HGA == 35),
+        gs_10 = (A_HGA == 36),
+        gs_11 = (A_HGA == 37),
+        gs_12 = (A_HGA == 38),
+        hs = (A_HGA == 39),
+        college = (A_HGA == 40),
+        a_occ.or.voc = (A_HGA == 41),
+        a_acad = (A_HGA == 42),
+        ba = (A_HGA == 43),
+        ma = (A_HGA == 44),
+        prof.school = (A_HGA == 45),
+        doct = (A_HGA == 46),
+        )  
+
+#head(h2.dat)
+```
+
+## Data visualisation
+```{r}
+gg = ggplot(data = h2.dat, aes(hours_worked, pay_week, color = A_HGA))
+gg + geom_point(size = 3, alpha = 1) + geom_smooth(se = FALSE)
+
+h2.dat.f1 <- h2.dat %>%
+  select(-hhppID)
+
+#cor(h2.dat.f1)
+df.HeatMap.notext(h2.dat.f1)
+
+glm.fit <- glm(paid_abscence~ pay_week + hours_worked, data = h2.dat)
+glm.fit
+
+gg <- ggplot(data = h2.dat, aes(x = hours_worked, y = pay_week, color = paid_abscence))
+gg + geom_point()
+
+gg <- ggplot(data = h2.dat, aes(y = hours_worked, x = pay_week, color = A_HGA))
+gg + geom_point(size = 4) +
+  geom_smooth()
+
+#Is there a fundamental difference between the true and false conditions?
+```
+
+# Hypothesis 1 Modeling
+
+```{r Modeling the predicted relationship between pay rate and binary outcome of paid abscence}
+glm.fit.test <- glm(paid_abscence~pay_rate, data = pp.paid_abscence.train, family = binomial)
+#glm.fit.test
+summary(glm.fit.test)
+  
+glm.probs.test <- predict(glm.fit.test, pp.paid_abscence.train, type = "response")
+glm.pred <- rep(0, nrow(pp.paid_abscence.train))
+glm.pred[glm.probs.test > 0.5] <- 1
+
+confusion_df <- data.frame(glm.pred, pp.paid_abscence.train$paid_abscence) #create confusion df
+colnames(confusion_df) = c('predicted', 'actual')
+
+mean(confusion_df$predicted == confusion_df$actual)
+
+#Formalize a train and test set from this data frame (pp.dat.paid_abscence.select)
+
+#More accurate when we run it on the full dataset...A fairly decent model! But it stil only accounts for 55% of our cases.
+```
+
+
+When it comes to training the model on the test set, it only has 50% accuracy, about as good as tossing a coin, which isn't a good sign. Perhaps adding education to the model could change things?
+
+```{r}
+glm.fit.test <- glm(paid_abscence~pay_rate + A_HGA, data = pp.paid_abscence.train, family = binomial)
+
+test_input_out <- pp.paid_abscence.train$paid_abscence
+lazyAccuracy(test_input_out, glm.fit.test, pp.paid_abscence.train)
+```
+Looks like it certainly does - adding the categorical spectrum of education to our prediction model was enough to increase the accuracy by around 13%!
+
+# Hypothesis 3
+
+Pay rate, $\frac{pay/week}{work/week}$ can be roughly determined by whether a person's highest level of education is ninth grade, a bachelor's degree, a master's, and a doctorate. In this case, we suppose it is a better model than random chance.
+
+## Cross-tested application of best models
+
+### Initially established in "Rapidly Determined Full Subset Selection Models"
+
+#### Best model 1: most parsimonious
+`glm(paid_abscence~ A_FTLF + ba + ma, data = data)`
+#### Best model 2: most variance explained
+`glm3 <- glm(paid_abscence~ gs_7.8 + gs_10 + gs_11 + gs_12 + hs + ba + ma, data = data)`
+
+```{r}
+#We are going to test these 2 models and see what they say about our data.
+
+#pp.jobqual.education.f4 refers to an omitted part of the data cleaning process, but it is basically a really shitty shitty way to reference an expanded version of the training model because there was not enough time to didy the code and references.
+
+glm.fit.1 <- glm(pay_rate~prof.school+doct, data = pp.jobqual.education.f4)
+summary(glm.fit.1)
+
+glm.fit.2 <- glm(pay_rate~a_occ.or.voc+prof.school+doct, data = pp.jobqual.education.f4)
+
+summary(glm.fit.2)
+
+train_input_out <- pp.jobqual.education.f4$paid_abscence
+#test_input_out <- pp.paid_abscence.test$paid_abscence
+lazyAccuracy(train_input_out, glm.fit.1, pp.jobqual.education.f4)
+#lazyAccuracy(test_input_out, glm.fit.2, pp.jobqual.education.f4)
+
+lazyAccuracy(train_input_out, glm.fit.2, pp.jobqual.education.f4)
+```
+Both models have <50% accuracy in predicting pay rate by education. These models do not model our data well (especially if they're doing so poorly on the train data.
+
+
+# MODEL VISUALISATION: payrate + weighted education vector
+```{r plots, echo = FALSE}
+#pp.paid_abscence.train
+
+pp.paid_abscence.expand.hga <- pp.jobqual.education.f4 %>% #Model Search space data frame - preselected
+  select(pay_rate, less_gs, gs_1.4, gs_3.6, gs_7.8, gs_9, gs_10, gs_11, gs_12, hs, college, a_occ.or.voc, a_acad, ba, ma, prof.school, doct)
+
+payrate_model <- pp.paid_abscence.train %>%
+  select(pay_rate, A_HGA)
+```  
+
+# MODEL VISUALISATION: payrate by Associate's Degree, Professional School, Doctorate'
+
+Yet again people with doctorates are reminded of how much society values them - notice the drop in pay rate at x = 46.
+
+```{r plot BA, PROF SCHOOL and DOCTORATE, echo = FALSE} 
+payrate_model <- filter(payrate_model, A_HGA %in% c(41, 45, 46))
+
+gg <- ggplot(payrate_model, aes(x =A_HGA , y = pay_rate, color = A_HGA)) +
+  geom_smooth() + 
+  geom_point(position = "jitter")
+gg 
+```
+# MODEL VISUALISATION: PROF SCHOOL and DOCTORATE
+
+```{r plot PROF SCHOOL and DOCTORATE, echo = FALSE}
+payrate_model.2 <- filter(payrate_model, A_HGA %in% c(45, 46))
+
+gg <- ggplot(payrate_model, aes(x =A_HGA , y = pay_rate, color = A_HGA)) +
+  geom_smooth() + 
+  geom_point(position = "jitter")
+gg 
+
+```
+
+# TEST DATA POTENTIAL APPLICAIONS: VISUALISATIONS
+
+```{r plot model with test data, echo = FALSE}
+payrate_model <- pp.paid_abscence.test %>%
+  select(pay_rate, A_HGA)
+  
+gg <- ggplot(payrate_model, aes(x =A_HGA , y = pay_rate, color = A_HGA)) +
+  geom_smooth(method = 'glm') + 
+  geom_point(position = "jitter")
+gg 
+
+payrate_model <- filter(payrate_model, A_HGA %in% c(41, 45, 46))
+
+gg <- ggplot(payrate_model, aes(x =A_HGA , y = pay_rate, color = A_HGA)) +
+  geom_smooth() + 
+  geom_point(position = "jitter")
+gg 
+
+payrate_model <- filter(payrate_model, A_HGA %in% c(45, 46))
+
+gg <- ggplot(payrate_model, aes(x =A_HGA , y = pay_rate, color = A_HGA)) +
+  geom_smooth() + 
+  geom_point(position = "jitter")
+gg 
+```
+
+# Hypothesis 3-a
+
+Pay rate, $\frac{pay/week}{work/week}$ can be most precisely modeled when considering everly level of a person's education as a binary outcome.
+
+So we are going to run a ridge regression on all the parameters, determine a model with it, and see if we are right or wrong. (e.g. how does it stack up to our other models?)
+
+Run the model
+```{r}
+library(glmnet)
+
+lambda_search_space = 10^seq(10, -2, length=100) # Establish a range of lambda values
+
+pp.paid_abscence.expand.hga <- pp.paid_abscence.expand.hga %>% #Model Search space data frame - preselected
+  select(pay_rate, less_gs, gs_1.4, gs_3.6, gs_7.8, gs_9, gs_10, gs_11, gs_12, hs, college, a_occ.or.voc, a_acad, ba, ma, prof.school, doct)
+
+# Define search space
+x = model.matrix(pay_rate~., pp.paid_abscence.expand.hga) #without first intercept column
+
+# selecting y from the dataframe
+# get rid of NAs so that rows are matched with those in x
+y = pp.paid_abscence.expand.hga$pay_rate
+
+ridge.mod = glmnet(x, y, alpha=0, lambda=lambda_search_space)
+summary(ridge.mod)
+```
+```{r find best lambda}
+
+set.seed(2) # Use the same seed so we get the same results
+
+# Create your validation sets
+train=sample(1:nrow(x), nrow(x)/2) #50/50 split into training and test sets
+test=(-train) #get test indices (not training indices)
+
+#split each of the training and test phases into two 
+#need to have separate validation sets for lambda and for beta estimates
+
+train_hyperparameter = sample(train, length(train)/2)
+train_glm = (-train_hyperparameter)
+
+test_hyperparameter = sample(test, length(test)/2)
+test_glm = (-test_hyperparameter)
+
+#make sure that the samples do not overlap
+sum(test_hyperparameter == train_hyperparameter) 
+sum(test_glm == train_glm) 
+sum(train_hyperparameter == train_glm) 
+
+# Using 10-fold CV, cross-validate on the training data
+set.seed(1)
+cv.out = cv.glmnet(x[train_hyperparameter,], y[train_hyperparameter], alpha=0) #alpha=0=ridge regression
+plot(cv.out) #defaults to 10-fold CV
+bestlam = cv.out$lambda.min
+bestlam
+```
+```{r ridge mod best lambda}
+ridge.mod.bestlambda = glmnet(x, y, alpha=0, lambda=1218.345)
+
+# First setup the model
+out = glmnet(x[train_glm,],y[train_glm], alpha=0)
+plot(out)
+# # Then predict.
+predict(out, type="coefficients", s=bestlam, newx=x[test_glm,])[1:18,] # "s = bestlam" picks out the winning value and shows those coefs.
+```
+
+```{r glms based on ridge predictors: predicting models and discovering the best ones}
+
+
+glm.fit <- glm(pay_rate~less_gs+ba+ma+prof.school+doct, data = pp.paid_abscence.expand.hga)
+
+summary(glm.fit)
+
+test_input_out <- pp.paid_abscence.expand.hga$pay_rate
+lazyAccuracy(test_input_out, glm.fit, pp.paid_abscence.expand.hga)
+
+gg <- ggplot(data = pp.paid_abscence.expand.hga, aes(pay_rate)) +
+  geom_density()
+gg
+
+glm.fit.1 <- glm(pay_rate~less_gs+gs_1.4+gs_3.6+gs_7.8+gs_9+gs_10+gs_11+gs_12+hs+ college + a_occ.or.voc + a_acad, data = pp.paid_abscence.expand.hga)
+
+summary(glm.fit.1)
+
+glm.fit.2 <- glm(pay_rate~ba+ma+prof.school+doct, data = pp.paid_abscence.expand.hga)
+
+
+summary(glm.fit.2)
+
+lm(pay_rate~ma, data = pp.paid_abscence.expand.hga)
+
+gg <- ggplot(pp.paid_abscence.expand.hga, aes(y = pay_rate, x = ma)) +
+  geom_boxplot()
+gg
+
+#glm.fit.test <- glm(paid_abscence~pay_rate + A_HGA, data = pp.paid_abscence.train, family = binomial)
+```
+
+Attempts to model income using ridge regression as a best-model predictor were unsuccessful, presumably due to the data being a poor fit for the model.
+
+Conclusion: model cannot be used to model pay rate. Hypothesis 3 does not pass.
+
+# Summary
