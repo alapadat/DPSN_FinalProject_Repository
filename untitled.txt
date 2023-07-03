@@ -1,0 +1,11 @@
+RESOURCES
+
+- ADD NEWLINE CHARACTER TO PRINT
+    - https://stackoverflow.com/questions/9317830/r-do-i-need-to-add-explicit-new-line-character-with-print
+    
+- GAMMA DISTRIBUTION
+    - EXPLAINS rate and scale
+        - https://pubs.wsb.wisc.edu/academics/analytics-using-r-2019/gamma-variables-optional.html
+    - Shows a lot of stuff
+        - https://data.library.virginia.edu/getting-started-with-gamma-regression/
+- 3
